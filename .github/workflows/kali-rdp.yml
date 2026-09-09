@@ -1,0 +1,73 @@
+name: Kali Linux Cloud RDP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360 # حداکثر زمان مجاز گیت‌هاب در پلن رایگان (۶ ساعت)
+
+    steps:
+      - name: 1. Run Kali Linux Docker Container
+        run: |
+          # اجرای کانتینر کالی لینوکس با دسترسی‌های لازم برای Tailscale و RDP
+          docker run -d --name kali-rdp \
+            --privileged \
+            --cap-add=NET_ADMIN \
+            --device /dev/net/tun \
+            -p 3389:3389 \
+            kalilinux/kali-rolling \
+            tail -f /dev/null
+
+      - name: 2. Install Desktop, XRDP & Create Admin User
+        run: |
+          # اجرای دستورات نصب داخل کانتینر کالی
+          docker exec kali-rdp bash -c '
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update
+            apt-get install -y kali-desktop-xfce xrdp sudo curl wget
+            
+            # ساخت کاربر admin با رمز admin
+            useradd -m -s /bin/bash admin
+            echo "admin:admin" | chpasswd
+            usermod -aG sudo admin
+            
+            # تنظیم دسکتاپ XFCE برای XRDP
+            echo "xfce4-session" > /home/admin/.xsession
+            chown admin:admin /home/admin/.xsession
+            chmod +x /home/admin/.xsession
+            sed -i "s/^exec.*/exec startxfce4/" /etc/xrdp/startwm.sh
+            
+            # شروع سرویس XRDP
+            service xrdp start
+          '
+
+      - name: 3. Install & Connect Tailscale VPN
+        env:
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+        run: |
+          # نصب و اتصال Tailscale داخل کانتینر کالی
+          docker exec kali-rdp bash -c '
+            curl -fsSL https://tailscale.com/install.sh | sh
+            tailscale up --authkey="$TAILSCALE_AUTHKEY" --hostname="kali-github-rdp"
+            sleep 5
+            
+            TS_IP=$(tailscale ip -4)
+            echo ""
+            echo "=================================================="
+            echo "  >>> KALI LINUX RDP SERVER IS READY! <<<"
+            echo "  Tailscale IP : $TS_IP"
+            echo "  Username     : admin"
+            echo "  Password     : admin"
+            echo "  >> Open mstsc (Remote Desktop) and connect to: $TS_IP"
+            echo "=================================================="
+          '
+
+      - name: 4. Keep Server Alive
+        run: |
+          # زنده نگه داشتن ورک‌فلو (و در نتیجه کانتینر) تا حداکثر ۶ ساعت
+          for i in {1..360}; do
+            echo "[$i/360] Kali server is running..."
+            sleep 60
+          done
