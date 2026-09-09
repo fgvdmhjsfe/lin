@@ -13,66 +13,84 @@ jobs:
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
-          # نصب Tailscale روی هاست اوبونتو (نه داخل کانتینر)
           curl -fsSL https://tailscale.com/install.sh | sh
-          
-          # اتصال به شبکه Tailscale
           sudo tailscale up --authkey="$TAILSCALE_AUTHKEY" --hostname="kali-github-rdp"
-          
           sleep 5
-          
-          # دریافت IP تایل‌اسکیل
           TS_IP=$(tailscale ip -4)
           echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
-          
-          echo ""
-          echo "=================================================="
-          echo "  Tailscale Connected!"
-          echo "  Tailscale IP : $TS_IP"
-          echo "=================================================="
+          echo "Tailscale IP: $TS_IP"
 
       - name: 2. Run Kali Linux Docker Container
         run: |
-          # اجرای کانتینر کالی با port mapping
           docker run -d --name kali-rdp \
             --privileged \
             -p 3389:3389 \
             kalilinux/kali-rolling \
-            tail -f /dev/null
+            bash -c "apt-get update && apt-get install -y dbus-x11 && tail -f /dev/null"
 
-      - name: 3. Install Desktop & XRDP in Container
+      - name: 3. Install Complete Kali Desktop & XRDP
         run: |
-          # نصب محیط دسکتاپ و XRDP داخل کانتینر
           docker exec kali-rdp bash -c '
             export DEBIAN_FRONTEND=noninteractive
+            
+            # نصب کامل دسکتاپ کالی
             apt-get update
-            apt-get install -y kali-desktop-xfce xrdp sudo
+            apt-get install -y kali-desktop-xfce xrdp sudo dbus-x11 x11-xserver-utils
             
             # ساخت کاربر admin
             useradd -m -s /bin/bash admin
             echo "admin:admin" | chpasswd
             usermod -aG sudo admin
             
-            # تنظیم XFCE
-            echo "xfce4-session" > /home/admin/.xsession
+            # تنظیم صحیح startwm.sh
+            cat > /etc/xrdp/startwm.sh << "EOF"
+            #!/bin/sh
+            if [ -r /etc/default/locale ]; then
+              . /etc/default/locale
+              export LANG LANGUAGE
+            fi
+            unset DBUS_SESSION_BUS_ADDRESS
+            unset XDG_RUNTIME_DIR
+            exec startxfce4
+            EOF
+            chmod +x /etc/xrdp/startwm.sh
+            
+            # تنظیم .xsession برای کاربر admin
+            echo "startxfce4" > /home/admin/.xsession
             chown admin:admin /home/admin/.xsession
             chmod +x /home/admin/.xsession
-            sed -i "s/^exec.*/exec startxfce4/" /etc/xrdp/startwm.sh
+            
+            # غیرفعال کردن Polkit
+            mkdir -p /etc/polkit-1/localauthority/50-local.d
+            cat > /etc/polkit-1/localauthority/50-local.d/45-allow-colord.pkla << "EOF"
+            [Allow Colord all Users]
+            Identity=unix-user:*
+            Action=org.freedesktop.color-manager.create-device;org.freedesktop.color-manager.create-profile;org.freedesktop.color-manager.delete-device;org.freedesktop.color-manager.delete-profile;org.freedesktop.color-manager.modify-device;org.freedesktop.color-manager.modify-profile
+            ResultAny=no
+            ResultInactive=no
+            ResultActive=yes
+            EOF
             
             # شروع XRDP
             service xrdp start
+            sleep 2
+            
+            # بررسی وضعیت XRDP
+            service xrdp status
           '
-          
+
+      - name: 4. Verify and Display Connection Info
+        run: |
           echo ""
           echo "=================================================="
           echo "  >>> KALI LINUX RDP SERVER IS READY! <<<"
           echo "  Tailscale IP : ${{ env.TAILSCALE_IP }}"
           echo "  Username     : admin"
           echo "  Password     : admin"
-          echo "  >> Connect to: ${{ env.TAILSCALE_IP }}"
+          echo "  >> Connect with Remote Desktop to: ${{ env.TAILSCALE_IP }}"
           echo "=================================================="
 
-      - name: 4. Keep Server Alive
+      - name: 5. Keep Server Alive
         run: |
           for i in {1..360}; do
             echo "[$i/360] Kali server is running..."
